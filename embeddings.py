@@ -1,8 +1,9 @@
 from ray import serve
 from PIL import Image
 import io
+import json
 from typing import List
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 import logging
@@ -20,6 +21,7 @@ app = FastAPI()
 class TextRequest(BaseModel):
     texts: List[str]
 
+# Rest of the CLIPEmbedder class remains the same
 class CLIPEmbedder:
     def __init__(self, model_name: str = "ViT-B/32") -> None:
         logger.info("Initializing CLIPEmbedder")
@@ -174,22 +176,25 @@ class EmbeddingDeployment:
     @app.post("/similarity")
     async def compute_similarity(
             self,
-            files: List[UploadFile] = File(None),
-            text_request: TextRequest = None
+            files: List[UploadFile] = File(...),
+            text_request: str = Form(...)
     ):
         try:
-            # Get image embeddings if files provided
-            if files:
-                images = [Image.open(io.BytesIO(await file.read())) for file in files]
-                image_embeddings = self.generator.get_image_embeddings(images)
-            else:
-                raise HTTPException(status_code=400, detail="No images provided")
+            # Parse the text_request JSON string
+            try:
+                text_data = json.loads(text_request)
+                text_request_obj = TextRequest(**text_data)
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail="Invalid JSON in text_request")
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid text_request format: {str(e)}")
 
-            # Get text embeddings if texts provided
-            if text_request and text_request.texts:
-                text_embeddings = self.generator.get_text_embeddings(text_request.texts)
-            else:
-                raise HTTPException(status_code=400, detail="No texts provided")
+            # Get image embeddings
+            images = [Image.open(io.BytesIO(await file.read())) for file in files]
+            image_embeddings = self.generator.get_image_embeddings(images)
+
+            # Get text embeddings
+            text_embeddings = self.generator.get_text_embeddings(text_request_obj.texts)
 
             # Compute similarities
             similarities = self.generator.compute_similarity(image_embeddings, text_embeddings)
@@ -203,7 +208,7 @@ class EmbeddingDeployment:
                                 "text": text,
                                 "score": float(score)
                             }
-                            for text, score in zip(text_request.texts, sim_scores)
+                            for text, score in zip(text_request_obj.texts, sim_scores)
                         ]
                     }
                     for file, sim_scores in zip(files, similarities)
